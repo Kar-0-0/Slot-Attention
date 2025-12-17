@@ -43,23 +43,48 @@ class SlotAttention(nn.Module):
         B, n_inp, attn_dim = x.shape
         slots = torch.randn((B, self.n_slots, attn_dim), device=x.device)
     
-        for t in range(self.t_iters):
+        for _ in range(self.t_iters):
             slot_in = slots
             q = self.q(slot_in) # (B, n_slots, attn_dim)
             kv = self.kv(x) # (B, n_inp, attn_dim
             k, v = kv.split(attn_dim, dim=2) # (B, n_inp, attn_dim)
+
             q = q.view(B, self.n_slots, self.n_heads, self.head_size).transpose(1, 2) # (B, nh, ns, hs)
             k = k.view(B, n_inp, self.n_heads, self.head_size).transpose(1, 2) # (B, nh, ni, hs)
             v = v.view(B, n_inp, self.n_heads, self.head_size).transpose(1, 2) # (B, nh, ni, hs)
+
             scores = (q @ k.transpose(-2, -1)) * 1/sqrt(k.size(-1)) # (B, nh, ns, ni)
             scores = F.softmax(scores, dim=-2)
+
             updates = scores @ v # (B, nh, ns, hs)
             updates = updates.transpose(1, 2).contiguous().view(B, self.n_slots, attn_dim)
+
             slots_reshaped = slots.view(B*self.n_slots, 1, attn_dim)
             updates_reshaped = updates.view(B*self.n_slots, 1, attn_dim)
+
             _, h_0 = self.gru(updates_reshaped, slots_reshaped)
             slots = h_0.squeeze(0).view(B, self.n_slots, attn_dim)  
 
         return slots
     
+
+class Decoder(nn.Module):
+    def __init__(self, attn_dim, height, width):
+        super().__init__()
+        self.rgb_proj = nn.Linear(attn_dim, height*width*3)
+        self.mask_proj = nn.Linear(attn_dim, height*width)
+        self.height = height
+        self.width = width
     
+    def forward(self, x):
+        B, n_slots, _ = x.shape
+        rgb_map = self.rgb_proj(x)
+        rgb_map = rgb_map.view(B, n_slots, self.height, self.width, 3)
+        mask = self.mask_proj(x)
+        mask = mask.view(B, n_slots, self.height, self.width, 1)
+        mask_conf = F.softmax(mask, dim=1)
+        slot_imgs = mask_conf * rgb_map
+        img = slot_imgs.sum(dim=1)
+        
+        return img
+            
