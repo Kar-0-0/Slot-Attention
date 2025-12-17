@@ -59,8 +59,8 @@ class SlotAttention(nn.Module):
             updates = scores @ v # (B, nh, ns, hs)
             updates = updates.transpose(1, 2).contiguous().view(B, self.n_slots, attn_dim)
 
-            slots_reshaped = slots.view(B*self.n_slots, 1, attn_dim)
-            updates_reshaped = updates.view(B*self.n_slots, 1, attn_dim)
+            slots_reshaped = slots.view(1, B*self.n_slots, attn_dim)
+            updates_reshaped = updates.view(1, B*self.n_slots, attn_dim)
 
             _, h_0 = self.gru(updates_reshaped, slots_reshaped)
             slots = h_0.squeeze(0).view(B, self.n_slots, attn_dim)  
@@ -71,22 +71,38 @@ class SlotAttention(nn.Module):
 class Decoder(nn.Module):
     def __init__(self, attn_dim, height, width):
         super().__init__()
-        self.rgb_proj = nn.Linear(attn_dim, height*width*3)
-        self.mask_proj = nn.Linear(attn_dim, height*width)
         self.height = height
         self.width = width
-    
+        xs = torch.linspace(-1, 1, width)
+        ys = torch.linspace(-1, 1, height)
+        x_grid, y_grid = torch.meshgrid(xs, ys, indexing="ij")
+        xy_grid = torch.stack([x_grid, y_grid], dim=-1) # (H, W, 2)
+        self.register_buffer("xy_grid", xy_grid)
+        self.conv_tower = nn.Sequential(
+            nn.Conv2d(attn_dim + 2, 64, 5, padding=2),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, 5, padding=2), 
+            nn.ReLU(),
+            nn.Conv2d(64, 4, 3, padding=1)  # (B, H, W, 4)
+        )
+
     def forward(self, x):
-        B, n_slots, _ = x.shape
-        rgb_map = self.rgb_proj(x)
-        rgb_map = rgb_map.view(B, n_slots, self.height, self.width, 3)
-        mask = self.mask_proj(x)
-        mask = mask.view(B, n_slots, self.height, self.width, 1)
-        mask_conf = F.softmax(mask, dim=1)
-        slot_imgs = mask_conf * rgb_map
-        img = slot_imgs.sum(dim=1)
-        
-        return img
+        B, n_slots, D = x.shape
+        x = x[:, :, :, None, None]
+        x = x.expand((B, n_slots, D, self.height, self.width))
+        xy_grid = self.xy_grid.permute(2, 0, 1)[None, None, :, :, :]
+        feats = torch.cat([x, xy_grid], dim=2) # (B, n_slots, D+2, H, W)
+        x = feats.view(B*n_slots, D+2, self.height, self.width)
+        full_x = self.conv_tower(x)
+        full_x = full_x.view(B, n_slots, 4, self.height, self.width)
+        full_x = full_x.permute(0, 1, 3, 4, 2)
+        rgb = full_x[:, :, :, :, 0:3] # (B, n_slots, H, W, 3)
+        mask = full_x[:, :, :, :, 3:4] # (B, n_slots, H, W, 1)
+        mask = F.softmax(mask, dim=1)
+        rgb = mask * rgb
+        rgb = rgb.sum(dim=1)
+
+        return rgb
 
 
 class ReconModel(nn.Module):
