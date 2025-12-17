@@ -87,4 +87,37 @@ class Decoder(nn.Module):
         img = slot_imgs.sum(dim=1)
         
         return img
-            
+
+
+class ReconModel(nn.Module):
+    def __init__(
+            self,
+            feature_dim,
+            attn_dim, 
+            n_slots, 
+            n_heads, 
+            t_iters,
+            height, 
+            width
+    ):
+        super().__init__()
+        self.encoder = Encoder()
+        self.slot_attention = SlotAttention(
+            feature_dim,
+            attn_dim,
+            n_slots,
+            n_heads,
+            t_iters
+        )
+        self.decoder = Decoder(
+            attn_dim,
+            height,
+            width
+        )
+
+    def forward(self, x):
+        encoding = self.encoder(x)
+        slots = self.slot_attention(encoding)
+        img = self.decoder(slots)
+
+        return img
