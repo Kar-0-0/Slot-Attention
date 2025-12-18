@@ -23,6 +23,19 @@ class Encoder(nn.Module):
 
         return x
 
+class MLP(nn.Module):
+    def __init__(self, in_channels):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_channels, in_channels*4),
+            nn.ReLU(),
+            nn.Linear(in_channels*4, in_channels)
+        )
+    
+    def forward(self, x):
+        return self.net(x)
+    
+    
 
 class SlotAttention(nn.Module):
     def __init__(self, feature_dim, attn_dim, n_slots, n_heads, t_iters):
@@ -36,12 +49,15 @@ class SlotAttention(nn.Module):
         self.q = nn.Linear(attn_dim, attn_dim)
         self.kv = nn.Linear(attn_dim, attn_dim*2)
         self.gru = nn.GRU(attn_dim, attn_dim)
+        self.slot_mu = nn.Parameter(torch.randn(1, 1, attn_dim))
+        self.slot_sigma = nn.Parameter(torch.randn(1, 1, attn_dim))
+        self.mlp = MLP(attn_dim)
         
 
     def forward(self, x):
         x = self.ln(self.proj(x))
         B, n_inp, attn_dim = x.shape
-        slots = torch.randn((B, self.n_slots, attn_dim), device=x.device)
+        slots = self.slot_mu + self.slot_sigma * torch.randn((B, self.n_slots, attn_dim), device=x.device)
     
         for _ in range(self.t_iters):
             slot_in = slots
@@ -61,9 +77,10 @@ class SlotAttention(nn.Module):
 
             slots_reshaped = slots.view(1, B*self.n_slots, attn_dim)
             updates_reshaped = updates.view(1, B*self.n_slots, attn_dim)
-
             _, h_0 = self.gru(updates_reshaped, slots_reshaped)
             slots = h_0.squeeze(0).view(B, self.n_slots, attn_dim)  
+            slots = slots + self.mlp(self.ln(slots))
+
 
         return slots
     
@@ -85,12 +102,13 @@ class Decoder(nn.Module):
             nn.ReLU(),
             nn.Conv2d(64, 4, 3, padding=1)  # (B, H, W, 4)
         )
+        self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
         B, n_slots, D = x.shape
         x = x[:, :, :, None, None]
         x = x.expand((B, n_slots, D, self.height, self.width))
-        xy_grid = self.xy_grid.permute(2, 0, 1)[None, None, :, :, :]
+        xy_grid = self.xy_grid.permute(2, 0, 1)[None, None, :, :, :].expand((B, n_slots, -1, -1, -1)) # (B, n_slots, 2, H, W)
         feats = torch.cat([x, xy_grid], dim=2) # (B, n_slots, D+2, H, W)
         x = feats.view(B*n_slots, D+2, self.height, self.width)
         full_x = self.conv_tower(x)
@@ -101,6 +119,7 @@ class Decoder(nn.Module):
         mask = F.softmax(mask, dim=1)
         rgb = mask * rgb
         rgb = rgb.sum(dim=1)
+        rgb = self.sigmoid(rgb)
 
         return rgb
 
