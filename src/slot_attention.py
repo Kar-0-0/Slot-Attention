@@ -71,6 +71,7 @@ class SlotAttention(nn.Module):
 
             scores = (q @ k.transpose(-2, -1)) * 1/sqrt(k.size(-1)) # (B, nh, ns, ni)
             scores = F.softmax(scores, dim=-2)
+            scores = scores / (scores.sum(dim=-1, keepdim=True) + 1e-8) 
 
             updates = scores @ v # (B, nh, ns, hs)
             updates = updates.transpose(1, 2).contiguous().view(B, self.n_slots, attn_dim)
